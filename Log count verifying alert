@@ -1,0 +1,78 @@
+`comment("IF THIS SEARCH BREAKS THEN JUST THROW THE WHOLE THING AWAY, I CANT EVEN FULLY UNDERSTAND WHAT IT DOES AND IM THE ONE THAT WROTE THE THING")`
+
+
+
+| inputlookup append=t iccu_log_count.csv 
+| rex field=hourly_date "^(?<Hour>.*) - (?<Day>.*) - (?<Month>.*) - (?<Year>.*)$" 
+| eval newfield=relative_time(now(), "-1h")  
+| eval today_date=strftime(newfield, "%H - %d - %m - %Y")
+| rex field=today_date "^(?<THour>.*) - (?<TDay>.*) - (?<TMonth>.*) - (?<TYear>.*)$"      `comment("THROUGH ALL OF THIS I AM PULLING IN THE CSV DATA AND CURRENT TIME AND PARISING IT OUT")`
+| eval Today_Hour=if(TDay=Day AND last_hour=Hour, Hour, Today_Hour)
+| eval Last_Week=relative_time(now(), "-169h") 
+| eval Last_Week=strftime(Last_Week, "%H - %d - %m - %Y")
+| eval Yesterday=relative_time(now(), "-25h")
+| eval Yesterday=strftime(Yesterday, "%H - %d - %m - %Y")
+| eval previous_hour=relative_time(now(), "-2h")                                           `comment("FIELDS THAT HAVE PREVIOUS AT THE FRONT ARE DEALING WITH THAT TIME MINUS TWO HOURS")`
+| eval previous_hour=strftime(Yesterday, "%H - %d - %m - %Y")
+| eval previous_week=relative_time(now(), "-170h")
+| eval previous_week=strftime(Yesterday, "%H - %d - %m - %Y")
+| eval previous_day=relative_time(now(), "-26h")
+| eval previous_day=strftime(Yesterday, "%H - %d - %m - %Y")
+| where today_date=hourly_date OR Yesterday=hourly_date OR hourly_date=Last_Week
+| eval week_count=if(hourly_date=Last_Week, Event_Count, week_count)                                `comment("HERE AND THE LINES BELOW ARE GETTING THE TOTAL LOG COUNT FOR VARIOUS DAYS")`           
+| eval yesterday_count=if(Yesterday=hourly_date, Event_Count, yesterday_count)
+| eval today_count=if(hourly_date=today_date, Event_Count, today_count)
+| eval previous_hour_count=if(previous_hour=today_date, Event_Count, previous_hour_count)
+| eval previous_week_count=if(previous_week=today_date, Event_Count, previous_week_count)
+| eval previous_day_count=if(previous_day=today_date, Event_Count, previous_day_count)
+| eval today_count=if(hourly_date=today_date, Event_Count, today_count)
+
+
+
+
+| stats  values(Last_Week) AS Last_Week values(Yesterday) AS Yesterday values(today_date) AS today_date 
+values(week_count) as week_count values(yesterday_count) as yesterday_count values(today_count) as today_count                `comment("THIS STATS IS TO TALLY UP ALL THE COUNTS SO THAT THERE ARENT ANY DOUBLE RESULTS")`
+values(day_diff) as day_diff by source index       
+
+
+
+| eval yesterday_count=if(isnull(yesterday_count), "0", yesterday_count)
+| eval today_count=if(isnull(today_count), "0", today_count)
+| eval week_count=if(isnull(week_count), "0", week_count)                              
+
+`comment("AFTER THIS IS WHEN I PULL DIFFERENCE PERCENTAGES BETWEEN VARIOUS DELTAS")`
+
+| eval week_diff=if(today_count<week_count, (week_count - today_count) / week_count * 100, (today_count - week_count) / today_count * 100)          
+| eval day_diff=if(today_count<yesterday_count, (yesterday_count - today_count) / yesterday_count * 100, (today_count - yesterday_count) / today_count * 100)
+| eval previous_diff=if(today_count<previous_hour_count, (previous-hour_count - today_count) / previous_hour_count * 100, (today_count - previous_hour_count) / today_count * 100) 
+| eval previous_week_diff=if(today_count<previous_week_count, (previous_week_count - today_count) / previous_week_count * 100, (today_count - previous_week_count) / today_count * 100) 
+| eval previous_day_diff=if(today_count<previous_day_count, (previous_day_count - today_count) / previous_day_count * 100, (today_count - previous_day_count) / today_count * 100) 
+
+
+| eval week_diffcount=if(today_count<week_count, week_count - today_count, today_count - week_count)
+| eval day_diffcount=if(today_count<yesterday_count, yesterday_count - today_count, today_count - yesterday_count)
+| eval day_diff=if(isnull(day_diff), "100.00", day_diff)
+| eval day_diff=round(day_diff, 2)
+| eval week_diff=round(week_diff, 2)
+| eval week_diff=if(isnull(week_diff), "0.00", week_diff)                                               `comment("I HAVE NOT MUCH IDEA OF WHATS GOING ON IN THIS BLOCK OF CODE BUT ITS IMPORTANT")`
+| eval day_diff=replace(day_diff, "-", "")
+| eval count_level=if(yesterday_count<100 AND today_count<100, 1, 0)
+| eval perc_level=if(week_diff>99 AND day_diff>99, 1, 0)
+| eval change_type=if(today_count>yesterday_count, "INCREASED", "DECREASED")
+| eval report_statement= source. " " .change_type. " " .day_diff. "% BY " .day_diffcount. " IN THE LAST DAY AND " .week_diffcount. " IN THE LAST WEEK " 
+| eval day_percent=if(today_count<yesterday_count, "-" .day_diff. "%", day_diff."%")
+| eval week_percent=if(today_count<week_count, "-" .week_diff. "%", week_diff. "%")
+| eval count_level=case(today_count<100, 1, today_count<1000 AND today_count>100, 2, today_count>1000, 3, 1=1, 4)
+| eval problem=case(week_diff>99.00 OR day_diff>99.00, 1, day_diff>99.00 AND week_diff>99.00, 2, 1=1, 0)
+| eval total_problem=0
+
+
+
+| eval total_problem= count_level + problem
+| eval test=if(week_diff>80.00, "yes", "No")
+| eval test1=if(day_diff>80.00, "yes", "No")
+| eval this_is_dumb=if(today_count>1000 OR week_count>1000 OR yesterday_count>1000, 1, 0)
+| eval long_boi=if(test1="yes" OR test="yes", 1, 0)
+| eval last_warning=if(long_boi=1 AND this_is_dumb=1, 1, 0)
+| where last_warning=1
+| table index source today_count yesterday_count week_count day_diffcount week_diffcount day_percent week_percent previous_diff previous_day_diff previous_week_diff previous_day_count previous_day previous_hour previous_week
