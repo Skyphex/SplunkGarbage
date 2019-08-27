@@ -1,0 +1,139 @@
+index=msexchange  directionality="Originating" AND action="delivered" AND recipient!="*iccu.com" AND NOT
+(message_subject="RE*" OR message_subject="FW*" OR message_subject="*EXTERNAL*") AND
+(recipient="*gmail.com" OR recipient="*.edu" OR recipient="*hotmail.com" OR recipient "*yahoo.com" OR recipient="*msn.com" OR 
+recipient="*outlook.com" OR recipient="*aol.com" OR recipient="*zoho.com" OR recipient="*icloud.com" OR recipient="*inbox.com" OR recipient="*mail.com" OR recipient="*yandex.com" OR recipient="*protonmail.com")
+|rex field=recipient "^(?<re_name>.*)@(?<trash1>.*)$"      `comment("START OF FIRST 3 COMPARASON")`
+|rex field=sender "^(?<se_name>.*)@(?<trash1>.*)$"
+|rex field=se_name "^(?P<se_first3>...)"
+|rex field=re_name "^(?P<re_first3>...)"
+|eval first_value=if(like(se_first3, re_first3), 1, 0)   `comment("START OF LAST 3 COMPARASON")`
+|rex field=re_name "(?<re_last3>\w{3})$" 
+|rex field=se_name "(?<se_last3>\w{3})$" 
+|eval last_value=if(like(se_last3, re_last3), 3, 0)
+|eval subject_value=if(isnull(message_subject), 1, 0)
+| eval Time=strftime(_time,"%Y-%m-%d %H:%M:%S")
+`comment("THIS IS WHERE IM PULLING OUT CHARACTERS THAT I DONT WANT")`
+
+| rex field=re_name mode=sed "s/\d//g"
+| rex field=re_name mode=sed "s/_//g"
+| rex field=re_name mode=sed "s/\.//g"
+|eval se_cut=replace(se_name,"^.","")      `comment("THIS LINE IS CUTTING THE FIRST CHARACTER OFF THE SENDER EMAIL LEAVING THE LAST NAME OF THE SENDER")`
+| eval re_namer=re_name
+|eval se_mvmake=se_name
+|eval re_mvmake=re_name
+| eval re_cmb=re_name
+|eval re_len=len(re_name)
+|eval se_len=len(se_name)
+
+| rex field=re_mvmake "(?<re_my1>.*?)\d\d\d+(?<re_my2>.*)" | eval re_mvmake=if(isnull(re_my1), re_mvmake, re_my1+re_my2)
+| rex field=se_mvmake "(?<se_my1>.*?)\d\d\d+(?<se_my2>.*)" | eval se_mvmake=if(isnull(se_my1), se_mvmake, se_my1+se_my2)
+
+`comment("THIS IS THE PLACE WHERE I AM DETERMINING NUMBER OF RECIPIENT VALUES")`
+|eventstats count(recipient) as re_count by sender subject
+|eval count_threat=if(re_count>1, 1, 0)
+
+`comment("THIS IS THE START OF THE NAME COMPARISON")`
+|eval re_split=split(re_name,"")
+|eval se_split=split(se_name,"")
+| nomv re_split
+| nomv se_split
+| rex field=re_split mode=sed "s/[\r\n\s]+/;/g"
+| rex field=se_split mode=sed "s/[\r\n\s]+/;/g"
+| eval setdiff = split(replace(replace(replace(replace(mvjoin(mvsort(mvappend(split(replace(re_split, "(;|$)", "#1;"), ";"), split(replace(se_split, "(;|$)", "#0;"), ";"))), ";"), ";(\w+)#0\;\1#1", ""), ";\w+#1", ""), "#0", ""), ";(?!\w)|^;", ""), ";")
+|mvcombine setdiff
+|rex field=setdiff mode=sed "s/^\s+//g"
+|rex field=setdiff mode=sed "s/\s+$//g"
+|eval diff_len=len(setdiff)
+|eval diff_count=if(diff_len<2 OR isnull(diff_len), 2, 0)
+|eval threat_num=4
+|eval is_threat=if(like(se_name, re_name), 2, 0)
+| eval mb_out_total=((size/1024)/1024)
+`comment("START OF MESSAGE SUBJECT COMPARASON")`
+|eval appraise=if(like(message_subject, "%ppraisal%"), 2, 0)
+|eval payment=if(like(message_subject, "%ayment%"), 2, 0)
+|eval loan=if(like(message_subject, "%oan%"), 2, 0)
+|eval estimate=if(like(message_subject, "%stimate%"), 2, 0)
+|eval size_count=if(size>5000000, 1, 0)
+
+| eval se_name2=se_name
+| lookup AD.Users.LDAP.list.csv sAMAccountName as se_name2 OUTPUT OU as OU title as title givenName as givenName name as name
+| eval oul=lower(OU)
+| eval ou_threat=case(like(oul, "%security%"), 1, like(oul, "%manager%"), 1, like(oul, "%intern%"), 1, like(oul, "%help desk%"), 1, like(oul, "%app%"), 1, like(oul, "is users"), 1, like(oul, "%vendor%"), 1, like(oul, "%training%"), 1, like(oul, "%admin%"), 1, like(oul, "%workstation%"), 1, like(oul, "%audit%"), 1,  like(oul, "%management%"), 1,  like(oul, "%server%"), 1, like(oul, "%card%"), 1, like(oul, "%domain%"), 1, like(oul, "%daa%"), 1, like(oul, "%recources%"), 1, like(oul, "%office"), 1, like(oul, "users"), 1, like(oul, "vendors"), 1, like(oul, "%sql%"), 1, like(oul, "%onbase$"), 1, like(oul, "iccu daa"), 1,  like(oul, "%azure%"), 1, like(oul, "commvault"), 1,  like(oul, "ideation"), 1, like(oul, "paloaltogroups"), 1, like(oul, "marketing users"), 1, like(oul, "home users"), 1, like(oul, "financial service center users") , 0,  1=1,0)
+
+| eval sender_name=sender
+| eval sender_week=sender
+|lookup iccu_monthly_email_self_log.csv sender1 as sender_name OUTPUT month_count as month_count
+| lookup iccu_email_self_log.csv sender as sender_week OUTPUT total_count as total_count
+| eval total_count=if(isnull(total_count), 0, total_count)
+| eval month_count=if(isnull(month_count), 0, month_count)
+| eventstats sum(month_count) as month_count sum(total_count) as total_count by sender recipient
+| eval perc_diff=round((total_count/month_count)*100, 1)
+
+`comment("THIS IS THE START OF THE FIRST NAME COMPARISON")`
+|eval givenName=lower(givenName)
+|eval te_split=split(re_namer,"")
+|eval ne_split=split(givenName,"")
+| nomv te_split
+| nomv ne_split
+| rex field=te_split mode=sed "s/[\r\n\s]+/;/g"
+| rex field=ne_split mode=sed "s/[\r\n\s]+/;/g"
+| eval setdiff2 = split(replace(replace(replace(replace(mvjoin(mvsort(mvappend(split(replace(te_split, "(;|$)", "#1;"), ";"), split(replace(ne_split, "(;|$)", "#0;"), ";"))), ";"), ";(\w+)#0\;\1#1", ""), ";\w+#1", ""), "#0", ""), ";(?!\w)|^;", ""), ";")
+|mvcombine setdiff2
+|rex field=setdiff2 mode=sed "s/^\s+//g"
+|rex field=setdiff2 mode=sed "s/\s+$//g"
+|eval diff_len2=len(setdiff2)
+|eval diff_count2=if(diff_len2<2 OR isnull(diff_len2), 2, 0)
+|eval threat_num2=4
+| eval first_thing=if(count_threat=0 AND diff_count2=2 AND ou_threat=1, 2 , 0)
+| eval second_thing=if(count_threat=0 AND ou_threat=1, 2, 0)
+
+
+
+| eval tsend=case(like(recipient, "%auto%"), 1, like(recipient, "%loan%"), 1, like(recipient, "%mortgage%"), 1, like(recipient, "%realty%"), 1, like(recipient, "%ford%"), 1, like(recipient, "%nissan%"), 1, like(recipient, "%toyota%"), 1, like(recipient, "%honda%"), 1, like(recipient, "%dodge%"), 1, like(recipient, "%sales%"), 1, like(recipient, "%realtor%"), 1, like(recipient, "%estimate%"), 1, like(recipient, "%appraisal%"), 1, like(recipient, "%business%"), 1, like(recipient, "%lending%"), 1, like(recipient, "%store%"), 1, like(recipient, "%ranch%"), 1, like(recipient, "%sprinkler%"),1, like(recipient, "%doctor%"), 1, like(recipient, "%ranch%"), 1, 1=1, 0)
+
+
+
+`comment("THIS IS WHERE I AM ADDING UP THE PERCENTAGE FOR EMAIL MATCH")`
+
+| eval cmb_name=name
+| eval cmb_name=replace(cmb_name, " ", "")
+| eval cmb_name=trim(cmb_name)
+| eval cmb_name=lower(cmb_name)
+| eval full_threat=if(like(cmb_name, re_cmb), 2, 0)
+
+
+|eval givenName=lower(givenName)
+|eval rull_split=split(re_namer,"")
+|eval full_split=split(name,"")
+| nomv rull_split
+| nomv full_split
+| rex field=rull_split mode=sed "s/[\r\n\s]+/;/g"
+| rex field=full_split mode=sed "s/[\r\n\s]+/;/g"
+| eval setdiff3 = split(replace(replace(replace(replace(mvjoin(mvsort(mvappend(split(replace(rull_split, "(;|$)", "#1;"), ";"), split(replace(full_split, "(;|$)", "#0;"), ";"))), ";"), ";(\w+)#0\;\1#1", ""), ";\w+#1", ""), "#0", ""), ";(?!\w)|^;", ""), ";")
+|mvcombine setdiff3
+|rex field=setdiff3 mode=sed "s/^\s+//g"
+|rex field=setdiff3 mode=sed "s/\s+$//g"
+|eval diff_len3=len(setdiff3)
+|eval diff_count3=if(diff_len2<2 OR isnull(diff_len3), 2, 0)
+|eval threat_num3=4
+
+| eval first_thing=if(count_threat=0 AND diff_count2=2 AND ou_threat=1, 2 , 0)
+| eval second_thing=if(count_threat=0 AND ou_threat=1, 2, 0)
+
+
+
+| search tsend!=1
+| eval user_perc=if(isnull(user_perc) AND full_threat=2, 100 , user_perc)
+| eval user_perc=if(isnull(user_perc) AND is_threat=2, 100, user_perc)
+| eval user_perc=if(user_perc!=100 AND ou_threat=1 AND (diff_count=2 OR diff_count2=2), 90, user_perc)
+| eval user_perc=if(isnull(user_perc) AND ou_threat=1 AND diff_count!=2 AND diff_count2!=2, 70, user_perc)
+|eval user_perc=if(isnull(user_perc) AND ou_threat!=1 AND (diff_count=2 OR diff_count2=2), 80, user_perc)
+
+
+    | search subject!="*appraisal*"
+
+ `comment("THIS IS WHERE IM ADDING UP VALUES FOR DETERMINING THREAT")`
+|eval diff=(threat_num - appraise - payment - loan - estimate + size_count + first_value + last_value + is_threat + subject_value + diff_count - count_threat)   
+|eval Threat_Level=case(diff=1 OR diff=2, "Low", diff=3 OR diff=4, "Medium", diff=5 OR diff=6, "High", diff=9 OR diff=7 OR diff=8 OR diff=10, "Urgent")
+| search Threat_Level="Urgent" OR second_thing=2 OR first_thing=2 AND name!="*DEL:*"
+|stats values(mb_out_total) as "MB Out"  values(recipient)  as Recipient  values(Time) as Time values(OU) as OU values(name) as name  by sender subject | sort - "MB Out"
